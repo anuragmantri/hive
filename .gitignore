@@ -33,3 +33,4 @@ patchprocess
 standalone-metastore/src/gen/version
 standalone-metastore/metastore-common/src/gen/version
 standalone-metastore/metastore-server/src/gen/version
+*.patch
