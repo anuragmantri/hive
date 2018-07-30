@@ -187,7 +187,7 @@ public class LazyBinaryStruct extends LazyBinaryNonPrimitive<LazyBinaryStructObj
   /**
    * Get one field out of the struct.
    *
-   * If the field is a primitive field, return the actual object. Otherwise
+   * If the field is a primitive field, return the actual object. Otherwisegit
    * return the LazyObject. This is because PrimitiveObjectInspector does not
    * have control over the object used by the user - the user simply directly
    * use the Object instead of going through Object
