@@ -3334,6 +3334,12 @@ public class ObjectStore implements RawStore, Configurable {
       }
       mparts = (List<MPartition>) query.execute(tableName, dbName, catName);
       LOG.debug("Done executing query for listMPartitions");
+
+      //Warn if the number of partitions is greater than 10k.
+      if(mparts.size() > 10000) {
+        LOG.warn(tableName + " has " + String.valueOf(mparts.size()) +" partitions which is greater than 10000.");
+      }
+
       pm.retrieveAll(mparts);
       success = commitTransaction();
       LOG.debug("Done retrieving all objects for listMPartitions {}", mparts);
