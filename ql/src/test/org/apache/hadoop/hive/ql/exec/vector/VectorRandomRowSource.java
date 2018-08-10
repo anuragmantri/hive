@@ -22,8 +22,10 @@ import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
@@ -127,6 +129,7 @@ public class VectorRandomRowSource {
   private String[] alphabets;
 
   private boolean allowNull;
+  private boolean isUnicodeOk;
 
   private boolean addEscapables;
   private String needsEscapeStr;
@@ -287,26 +290,28 @@ public class VectorRandomRowSource {
     ALL, PRIMITIVES, ALL_EXCEPT_MAP
   }
 
-  public void init(Random r, SupportedTypes supportedTypes, int maxComplexDepth) {
-    init(r, supportedTypes, maxComplexDepth, true);
-  }
-
-  public void init(Random r, SupportedTypes supportedTypes, int maxComplexDepth, boolean allowNull) {
+  public void init(Random r, SupportedTypes supportedTypes, int maxComplexDepth, boolean allowNull,
+      boolean isUnicodeOk) {
     this.r = r;
     this.allowNull = allowNull;
+    this.isUnicodeOk = isUnicodeOk;
     chooseSchema(supportedTypes, null, null, null, maxComplexDepth);
   }
 
-  public void init(Random r, Set<String> allowedTypeNameSet, int maxComplexDepth, boolean allowNull) {
+  public void init(Random r, Set<String> allowedTypeNameSet, int maxComplexDepth, boolean allowNull,
+      boolean isUnicodeOk) {
     this.r = r;
     this.allowNull = allowNull;
+    this.isUnicodeOk = isUnicodeOk;
     chooseSchema(SupportedTypes.ALL, allowedTypeNameSet, null, null, maxComplexDepth);
   }
 
   public void initExplicitSchema(Random r, List<String> explicitTypeNameList, int maxComplexDepth,
-      boolean allowNull, List<DataTypePhysicalVariation> explicitDataTypePhysicalVariationList) {
+      boolean allowNull, boolean isUnicodeOk,
+      List<DataTypePhysicalVariation> explicitDataTypePhysicalVariationList) {
     this.r = r;
     this.allowNull = allowNull;
+    this.isUnicodeOk = isUnicodeOk;
 
     List<GenerationSpec> generationSpecList = new ArrayList<GenerationSpec>();
     for (String explicitTypeName : explicitTypeNameList) {
@@ -322,9 +327,11 @@ public class VectorRandomRowSource {
   }
 
   public void initGenerationSpecSchema(Random r, List<GenerationSpec> generationSpecList, int maxComplexDepth,
-      boolean allowNull, List<DataTypePhysicalVariation> explicitDataTypePhysicalVariationList) {
+      boolean allowNull, boolean isUnicodeOk,
+      List<DataTypePhysicalVariation> explicitDataTypePhysicalVariationList) {
     this.r = r;
     this.allowNull = allowNull;
+    this.isUnicodeOk = isUnicodeOk;
     chooseSchema(
         SupportedTypes.ALL, null, generationSpecList, explicitDataTypePhysicalVariationList,
         maxComplexDepth);
@@ -925,7 +932,60 @@ public class VectorRandomRowSource {
           {
             List<Object> valueList = generationSpec.getValueList();
             final int valueCount = valueList.size();
-            object = valueList.get(r.nextInt(valueCount));
+
+            TypeInfo typeInfo = generationSpec.getTypeInfo();
+            Category category = typeInfo.getCategory();
+            switch (category) {
+            case PRIMITIVE:
+            case STRUCT:
+              object = valueList.get(r.nextInt(valueCount));
+              break;
+            case LIST:
+              {
+                final int elementCount = r.nextInt(valueCount);
+
+                ListTypeInfo listTypeInfo = (ListTypeInfo) typeInfo;
+                TypeInfo elementTypeInfo = listTypeInfo.getListElementTypeInfo();
+                final ObjectInspector elementObjectInspector =
+                    TypeInfoUtils.getStandardWritableObjectInspectorFromTypeInfo(
+                        elementTypeInfo); 
+                List<Object> list = new ArrayList<Object>(elementCount);
+                for (int i = 0; i < elementCount; i++) {
+                  Object elementWritable =
+                      randomWritable(elementTypeInfo, elementObjectInspector,
+                          allowNull);
+                  list.add(elementWritable);
+                }
+                object = list;
+              }
+              break;
+            case MAP:
+              {
+                final int elementCount = r.nextInt(valueCount);
+
+                MapTypeInfo mapTypeInfo = (MapTypeInfo) typeInfo;
+                TypeInfo valueTypeInfo = mapTypeInfo.getMapValueTypeInfo();
+                final ObjectInspector valueObjectInspector =
+                    TypeInfoUtils.getStandardWritableObjectInspectorFromTypeInfo(
+                        valueTypeInfo);
+                Map<Object,Object> map = new HashMap<Object,Object>(elementCount);
+                for (int i = 0; i < elementCount; i++) {
+                  Object key = valueList.get(r.nextInt(valueCount));
+                  Object valueWritable =
+                      randomWritable(valueTypeInfo, valueObjectInspector,
+                          allowNull);
+                  if (!map.containsKey(key)) {
+                    map.put(
+                        key,
+                        valueWritable);
+                  }
+                }
+                object = map;
+              }
+              break;
+            default:
+              throw new RuntimeException("Unexpected category " + category);
+            }
           }
           break;
         default:
@@ -954,9 +1014,19 @@ public class VectorRandomRowSource {
       PrimitiveTypeInfo[] primitiveTypeInfos,
       DataTypePhysicalVariation[] dataTypePhysicalVariations) {
 
+    return randomPrimitiveRow(
+        columnCount, r, primitiveTypeInfos, dataTypePhysicalVariations, false);
+  }
+
+  public static Object[] randomPrimitiveRow(int columnCount, Random r,
+      PrimitiveTypeInfo[] primitiveTypeInfos,
+      DataTypePhysicalVariation[] dataTypePhysicalVariations, boolean isUnicodeOk) {
+
     final Object row[] = new Object[columnCount];
     for (int c = 0; c < columnCount; c++) {
-      row[c] = randomPrimitiveObject(r, primitiveTypeInfos[c], dataTypePhysicalVariations[c]);
+      row[c] =
+          randomPrimitiveObject(
+              r, primitiveTypeInfos[c], dataTypePhysicalVariations[c], isUnicodeOk);
     }
     return row;
   }
@@ -1569,11 +1639,11 @@ public class VectorRandomRowSource {
   }
 
   public static Object randomPrimitiveObject(Random r, PrimitiveTypeInfo primitiveTypeInfo) {
-    return randomPrimitiveObject(r, primitiveTypeInfo, DataTypePhysicalVariation.NONE);
+    return randomPrimitiveObject(r, primitiveTypeInfo, DataTypePhysicalVariation.NONE, false);
   }
 
   public static Object randomPrimitiveObject(Random r, PrimitiveTypeInfo primitiveTypeInfo,
-      DataTypePhysicalVariation dataTypePhysicalVariation) {
+      DataTypePhysicalVariation dataTypePhysicalVariation, boolean isUnicodeOk) {
 
     switch (primitiveTypeInfo.getPrimitiveCategory()) {
     case BOOLEAN:
@@ -1593,11 +1663,11 @@ public class VectorRandomRowSource {
     case DOUBLE:
       return Double.valueOf(r.nextDouble() * 10 - 5);
     case STRING:
-      return RandomTypeUtil.getRandString(r);
+      return getRandString(r, isUnicodeOk);
     case CHAR:
-      return getRandHiveChar(r, (CharTypeInfo) primitiveTypeInfo);
+      return getRandHiveChar(r, (CharTypeInfo) primitiveTypeInfo, isUnicodeOk);
     case VARCHAR:
-      return getRandHiveVarchar(r, (VarcharTypeInfo) primitiveTypeInfo);
+      return getRandHiveVarchar(r, (VarcharTypeInfo) primitiveTypeInfo, isUnicodeOk);
     case BINARY:
       return getRandBinary(r, 1 + r.nextInt(100));
     case TIMESTAMP:
@@ -1627,20 +1697,28 @@ public class VectorRandomRowSource {
     return RandomTypeUtil.getRandTimestamp(r).toString();
   }
 
-  public static HiveChar getRandHiveChar(Random r, CharTypeInfo charTypeInfo) {
+  public static String getRandString(Random r, boolean isUnicodeOk) {
+    return getRandString(r, r.nextInt(10), isUnicodeOk);
+  }
+
+  public static String getRandString(Random r, int length, boolean isUnicodeOk) {
+    return
+        !isUnicodeOk || r.nextBoolean() ?
+            RandomTypeUtil.getRandString(r, "abcdefghijklmnopqrstuvwxyz", length) :
+            RandomTypeUtil.getRandUnicodeString(r, length);
+  }
+
+  public static HiveChar getRandHiveChar(Random r, CharTypeInfo charTypeInfo, boolean isUnicodeOk) {
     final int maxLength = 1 + r.nextInt(charTypeInfo.getLength());
-    final String randomString = RandomTypeUtil.getRandString(r, "abcdefghijklmnopqrstuvwxyz", 100);
+    final String randomString = getRandString(r, 100, isUnicodeOk);
     return new HiveChar(randomString, maxLength);
   }
 
-  public static HiveVarchar getRandHiveVarchar(Random r, VarcharTypeInfo varcharTypeInfo, String alphabet) {
+  public static HiveVarchar getRandHiveVarchar(Random r, VarcharTypeInfo varcharTypeInfo,
+      boolean isUnicodeOk) {
     final int maxLength = 1 + r.nextInt(varcharTypeInfo.getLength());
-    final String randomString = RandomTypeUtil.getRandString(r, alphabet, 100);
+    final String randomString = getRandString(r, 100, isUnicodeOk);
     return new HiveVarchar(randomString, maxLength);
-  }
-
-  public static HiveVarchar getRandHiveVarchar(Random r, VarcharTypeInfo varcharTypeInfo) {
-    return getRandHiveVarchar(r, varcharTypeInfo, "abcdefghijklmnopqrstuvwxyz");
   }
 
   public static byte[] getRandBinary(Random r, int len){

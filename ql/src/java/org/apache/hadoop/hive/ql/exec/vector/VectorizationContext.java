@@ -1806,6 +1806,25 @@ public class VectorizationContext {
     return vectorExpression;
   }
 
+  public void wrapWithDecimal64ToDecimalConversions(VectorExpression[] vecExprs)
+      throws HiveException{
+    if (vecExprs == null) {
+      return;
+    }
+    final int size = vecExprs.length;
+    for (int i = 0; i < size; i++) {
+      VectorExpression vecExpr = vecExprs[i];
+      if (vecExpr.getOutputTypeInfo() instanceof DecimalTypeInfo) {
+        DataTypePhysicalVariation outputDataTypePhysicalVariation =
+            vecExpr.getOutputDataTypePhysicalVariation();
+        if (outputDataTypePhysicalVariation == DataTypePhysicalVariation.DECIMAL_64) {
+          vecExprs[i] =
+              wrapWithDecimal64ToDecimalConversion(vecExpr);
+        }
+      }
+    }
+  }
+
   public VectorExpression wrapWithDecimal64ToDecimalConversion(VectorExpression inputExpression)
       throws HiveException {
 
@@ -2854,7 +2873,11 @@ public class VectorizationContext {
     } else if (isTimestampFamily(inputType)) {
       return createVectorExpression(CastTimestampToString.class, childExpr, VectorExpressionDescriptor.Mode.PROJECTION, returnType);
     } else if (isStringFamily(inputType)) {
-      return createVectorExpression(CastStringGroupToString.class, childExpr, VectorExpressionDescriptor.Mode.PROJECTION, returnType);
+
+      // STRING and VARCHAR types require no conversion, so use a no-op.
+      // Also, CHAR is stored in BytesColumnVector with trimmed blank padding, so it also
+      // requires no conversion;
+      return getIdentityExpression(childExpr);
     }
     return null;
   }
@@ -3074,8 +3097,27 @@ public class VectorizationContext {
 
     List<ExprNodeDesc> castChildren = new ArrayList<ExprNodeDesc>();
     boolean wereCastUdfs = false;
+    Category commonTypeCategory = commonType.getCategory();
     for (ExprNodeDesc desc: childExpr.subList(1, 4)) {
-      if (commonType.equals(desc.getTypeInfo())) {
+      TypeInfo childTypeInfo = desc.getTypeInfo();
+      Category childCategory = childTypeInfo.getCategory();
+
+      if (childCategory != commonTypeCategory) {
+        return null;
+      }
+      final boolean isNeedsCast;
+      if (commonTypeCategory == Category.PRIMITIVE) {
+
+        // Do not to strict TypeInfo comparisons for DECIMAL -- just compare the category.
+        // Otherwise, we generate unnecessary casts.
+        isNeedsCast =
+            ((PrimitiveTypeInfo) commonType).getPrimitiveCategory() !=
+            ((PrimitiveTypeInfo) childTypeInfo).getPrimitiveCategory();
+      } else {
+        isNeedsCast = !commonType.equals(desc.getTypeInfo());
+      }
+
+      if (!isNeedsCast) {
         castChildren.add(desc);
       } else {
         GenericUDF castUdf = getGenericUDFForCast(commonType);
@@ -3250,9 +3292,43 @@ public class VectorizationContext {
   private VectorExpression getIfExpression(GenericUDFIf genericUDFIf, List<ExprNodeDesc> childExpr,
       VectorExpressionDescriptor.Mode mode, TypeInfo returnType) throws HiveException {
 
-    if (mode != VectorExpressionDescriptor.Mode.PROJECTION) {
+    boolean isFilter = false;    // Assume.
+    if (mode == VectorExpressionDescriptor.Mode.FILTER) {
+
+      // Is output type a BOOLEAN?
+      if (returnType.getCategory() == Category.PRIMITIVE &&
+          ((PrimitiveTypeInfo) returnType).getPrimitiveCategory() == PrimitiveCategory.BOOLEAN) {
+        isFilter = true;
+      } else {
+        return null;
+      }
+    }
+
+    // Get a PROJECTION IF expression.
+    VectorExpression ve = doGetIfExpression(genericUDFIf, childExpr, returnType);
+
+    if (ve == null) {
       return null;
     }
+
+    if (isFilter) {
+
+      // Wrap the PROJECTION IF expression output with a filter.
+      SelectColumnIsTrue filterVectorExpr = new SelectColumnIsTrue(ve.getOutputColumnNum());
+
+      filterVectorExpr.setChildExpressions(new VectorExpression[] {ve});
+
+      filterVectorExpr.setInputTypeInfos(ve.getOutputTypeInfo());
+      filterVectorExpr.setInputDataTypePhysicalVariations(ve.getOutputDataTypePhysicalVariation());
+
+      return filterVectorExpr;
+    } else {
+      return ve;
+    }
+  }
+
+  private VectorExpression doGetIfExpression(GenericUDFIf genericUDFIf, List<ExprNodeDesc> childExpr,
+      TypeInfo returnType) throws HiveException {
 
     // Add HiveConf variable with 3 modes:
     //   1) adaptor: Always use VectorUDFAdaptor for IF statements.
@@ -3300,8 +3376,10 @@ public class VectorizationContext {
     final boolean isOnlyGood = (hiveVectorIfStmtMode == HiveVectorIfStmtMode.GOOD);
 
     if (isThenNullConst) {
-      final VectorExpression whenExpr = getVectorExpression(ifDesc, mode);
-      final VectorExpression elseExpr = getVectorExpression(elseDesc, mode);
+      final VectorExpression whenExpr =
+          getVectorExpression(ifDesc, VectorExpressionDescriptor.Mode.PROJECTION);
+      final VectorExpression elseExpr =
+          getVectorExpression(elseDesc, VectorExpressionDescriptor.Mode.PROJECTION);
 
       final int outputColumnNum = ocm.allocateOutputColumn(returnType);
 
@@ -3338,8 +3416,10 @@ public class VectorizationContext {
     }
 
     if (isElseNullConst) {
-      final VectorExpression whenExpr = getVectorExpression(ifDesc, mode);
-      final VectorExpression thenExpr = getVectorExpression(thenDesc, mode);
+      final VectorExpression whenExpr =
+          getVectorExpression(ifDesc, VectorExpressionDescriptor.Mode.PROJECTION);
+      final VectorExpression thenExpr =
+          getVectorExpression(thenDesc, VectorExpressionDescriptor.Mode.PROJECTION);
 
       final int outputColumnNum = ocm.allocateOutputColumn(returnType);
 
@@ -3376,9 +3456,12 @@ public class VectorizationContext {
     }
 
     if ((isThenCondExpr || isElseCondExpr) && !isOnlyGood) {
-      final VectorExpression whenExpr = getVectorExpression(ifDesc, mode);
-      final VectorExpression thenExpr = getVectorExpression(thenDesc, mode);
-      final VectorExpression elseExpr = getVectorExpression(elseDesc, mode);
+      final VectorExpression whenExpr =
+          getVectorExpression(ifDesc, VectorExpressionDescriptor.Mode.PROJECTION);
+      final VectorExpression thenExpr =
+          getVectorExpression(thenDesc, VectorExpressionDescriptor.Mode.PROJECTION);
+      final VectorExpression elseExpr =
+          getVectorExpression(elseDesc, VectorExpressionDescriptor.Mode.PROJECTION);
 
       // Only proceed if the THEN/ELSE types were aligned.
       if (thenExpr.getOutputColumnVectorType() == elseExpr.getOutputColumnVectorType()) {
@@ -3429,15 +3512,12 @@ public class VectorizationContext {
 
     Class<?> udfClass = genericUDFIf.getClass();
     return getVectorExpressionForUdf(
-        genericUDFIf, udfClass, childExpr, mode, returnType);
+        genericUDFIf, udfClass, childExpr, VectorExpressionDescriptor.Mode.PROJECTION, returnType);
   }
 
   private VectorExpression getWhenExpression(List<ExprNodeDesc> childExpr,
       VectorExpressionDescriptor.Mode mode, TypeInfo returnType) throws HiveException {
 
-    if (mode != VectorExpressionDescriptor.Mode.PROJECTION) {
-      return null;
-    }
     final int size = childExpr.size();
 
     final ExprNodeDesc whenDesc = childExpr.get(0);
@@ -3669,6 +3749,10 @@ public class VectorizationContext {
       return (Short) o;
     } else if (o instanceof Integer) {
       return (Integer) o;
+    } else if (o instanceof Short) {
+      return (Short) o;
+    } else if (o instanceof Byte) {
+      return (Byte) o;
     } else if (o instanceof Long) {
       return (Long) o;
     }
