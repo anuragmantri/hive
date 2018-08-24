@@ -228,6 +228,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.mapred.InputFormat;
@@ -2823,6 +2824,18 @@ public class Vectorizer implements PhysicalPlanResolver {
         setOperatorIssue(functionName + " only UNBOUNDED start frame is supported");
         return false;
       }
+      List<ExprNodeDesc> exprNodeDescList = evaluatorInputExprNodeDescLists[i];
+      final boolean isSingleParameter =
+          (exprNodeDescList != null &&
+          exprNodeDescList.size() == 1);
+      final ExprNodeDesc singleExprNodeDesc =
+          (isSingleParameter ? exprNodeDescList.get(0) : null);
+      final TypeInfo singleTypeInfo =
+          (isSingleParameter ? singleExprNodeDesc.getTypeInfo() : null);
+      final PrimitiveCategory singlePrimitiveCategory =
+          (singleTypeInfo instanceof PrimitiveTypeInfo ?
+              ((PrimitiveTypeInfo) singleTypeInfo).getPrimitiveCategory() : null);
+
       switch (windowFrameDef.getWindowType()) {
       case RANGE:
         if (!windowFrameDef.getEnd().isCurrentRow()) {
@@ -2831,15 +2844,25 @@ public class Vectorizer implements PhysicalPlanResolver {
         }
         break;
       case ROWS:
-        if (!windowFrameDef.isEndUnbounded()) {
-          setOperatorIssue(functionName + " UNBOUNDED end frame is not supported for ROWS window type");
-          return false;
+        {
+          boolean isRowEndCurrent =
+              (windowFrameDef.getEnd().isCurrentRow() &&
+              (supportedFunctionType == SupportedFunctionType.AVG ||
+               supportedFunctionType == SupportedFunctionType.MAX ||
+               supportedFunctionType == SupportedFunctionType.MIN ||
+               supportedFunctionType == SupportedFunctionType.SUM) &&
+              isSingleParameter &&
+              singlePrimitiveCategory != null);
+          if (!isRowEndCurrent && !windowFrameDef.isEndUnbounded()) {
+            setOperatorIssue(
+                functionName + " UNBOUNDED end frame is required for ROWS window type");
+            return false;
+          }
         }
         break;
       default:
         throw new RuntimeException("Unexpected window type " + windowFrameDef.getWindowType());
       }
-      List<ExprNodeDesc> exprNodeDescList = evaluatorInputExprNodeDescLists[i];
       if (exprNodeDescList != null && exprNodeDescList.size() > 1) {
         setOperatorIssue("More than 1 argument expression of aggregation function " + functionName);
         return false;
@@ -3435,8 +3458,9 @@ public class Vectorizer implements PhysicalPlanResolver {
 
     boolean outerJoinHasNoKeys = (!desc.isNoOuterJoin() && keyDesc.size() == 0);
 
-    VectorExpression[] allBigTableKeyExpressions = vContext.getVectorExpressions(keyDesc);
-
+    // For now, we don't support joins on or using DECIMAL_64.
+    VectorExpression[] allBigTableKeyExpressions =
+        vContext.getVectorExpressionsUpConvertDecimal64(keyDesc);
     final int allBigTableKeyExpressionsLength = allBigTableKeyExpressions.length;
     boolean supportsKeyTypes = true;  // Assume.
     HashSet<String> notSupportedKeyTypes = new HashSet<String>();
@@ -3478,7 +3502,9 @@ public class Vectorizer implements PhysicalPlanResolver {
 
     List<ExprNodeDesc> bigTableExprs = desc.getExprs().get(posBigTable);
 
-    VectorExpression[] allBigTableValueExpressions = vContext.getVectorExpressions(bigTableExprs);
+    // For now, we don't support joins on or using DECIMAL_64.
+    VectorExpression[] allBigTableValueExpressions =
+        vContext.getVectorExpressionsUpConvertDecimal64(bigTableExprs);
 
     boolean isFastHashTableEnabled =
         HiveConf.getBoolVar(hiveConf,
@@ -4473,7 +4499,9 @@ public class Vectorizer implements PhysicalPlanResolver {
 
     List<ExprNodeDesc> keysDesc = groupByDesc.getKeys();
 
-    VectorExpression[] vecKeyExpressions = vContext.getVectorExpressions(keysDesc);
+    // For now, we don't support group by on DECIMAL_64 keys.
+    VectorExpression[] vecKeyExpressions =
+        vContext.getVectorExpressionsUpConvertDecimal64(keysDesc);
     ArrayList<AggregationDesc> aggrDesc = groupByDesc.getAggregators();
     final int size = aggrDesc.size();
 
@@ -5014,12 +5042,6 @@ public class Vectorizer implements PhysicalPlanResolver {
                 } else {
                   opClass = VectorMapJoinOuterFilteredOperator.class;
                 }
-
-                // Wrap any DECIMAL_64 expressions with Conversion.
-                vContext.wrapWithDecimal64ToDecimalConversions(
-                    vectorMapJoinDesc.getAllBigTableKeyExpressions());
-                vContext.wrapWithDecimal64ToDecimalConversions(
-                    vectorMapJoinDesc.getAllBigTableValueExpressions());
 
                 vectorOp = OperatorFactory.getVectorOperator(
                     opClass, op.getCompilationOpContext(), desc,
