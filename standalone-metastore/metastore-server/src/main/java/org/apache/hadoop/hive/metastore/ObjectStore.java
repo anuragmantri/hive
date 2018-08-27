@@ -3315,6 +3315,18 @@ public class ObjectStore implements RawStore, Configurable {
     return partitionNames;
   }
 
+  /**
+   * Warns if the number of partitions is greater than 10000
+   * @param numParts Number of partitions
+   * @param dbName Database name
+   * @param tblName Table name
+   * @param method method which is processing the partitions
+   */
+  private static void partitionSizeWarning(int numParts, String dbName, String tblName, String method){
+    LOG.warn(method + " is processing "+ numParts +" partitions for "+ dbName + "." + tblName +". Consider using a "
+        + "filter to reduce the number of partitions scanned.");
+  }
+
   // TODO:pc implement max
   private List<MPartition> listMPartitions(String catName, String dbName, String tableName,
                                            int max, QueryWrapper queryWrapper) {
@@ -3337,7 +3349,7 @@ public class ObjectStore implements RawStore, Configurable {
 
       //Warn if the number of partitions is greater than 10k.
       if(mparts.size() > 10000) {
-        LOG.warn(tableName + " has " + String.valueOf(mparts.size()) +" partitions which is greater than 10000.");
+        partitionSizeWarning(mparts.size(), dbName, tableName, "listMPartitions()");
       }
 
       pm.retrieveAll(mparts);

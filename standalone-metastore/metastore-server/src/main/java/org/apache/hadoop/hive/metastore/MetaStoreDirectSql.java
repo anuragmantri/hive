@@ -522,6 +522,18 @@ class MetaStoreDirectSql {
   }
 
   /**
+   * Warns if the number of partitions is greater than 10000
+   * @param numParts Number of partitions
+   * @param dbName Database name
+   * @param tblName Table name
+   * @param method method which is processing the partitions
+   */
+  private static void partitionSizeWarning(int numParts, String dbName, String tblName, String method){
+    LOG.warn(method + " is processing "+ numParts +" partitions for "+ dbName + "." + tblName +". Consider using a "
+        + "filter to reduce the number of partitions scanned.");
+  }
+
+  /**
    * Gets all partitions of a table by using direct SQL queries.
    * @param catName Metastore catalog name.
    * @param dbName Metastore db name.
@@ -536,9 +548,9 @@ class MetaStoreDirectSql {
     if (partitionIds.isEmpty()) {
       return Collections.emptyList(); // no partitions, bail early.
     }
-    //Warn if the number of partitions is greater than 10k.
+
     if(partitionIds.size() > 10000) {
-      LOG.warn(tblName + " has " + String.valueOf(partitionIds.size()) +" partitions which is greater than 10000.");
+      partitionSizeWarning(partitionIds.size(), dbName, tblName, "getPartitions()");
     }
 
     // Get full objects. For Oracle/etc. do it in batches.
