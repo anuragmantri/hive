@@ -548,6 +548,10 @@ class MetaStoreDirectSql {
     if (partitionIds.isEmpty()) {
       return Collections.emptyList(); // no partitions, bail early.
     }
+    //Warn if the number of partitions is greater than 10k.
+    if(partitionIds.size() > 10000) {
+      LOG.warn(tblName + " has " + String.valueOf(partitionIds.size()) +" partitions which is greater than 10000.");
+    }
 
     if(partitionIds.size() > 10000) {
       partitionSizeWarning(partitionIds.size(), dbName, tblName, "getPartitions()");
