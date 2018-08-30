@@ -232,7 +232,7 @@ public class MapJoinProcessor extends Transform {
       newWork.getMapWork().setMapAliases(null);
     } catch (Exception e) {
       throw new SemanticException("Failed to generate new mapJoin operator " +
-          "by exception : " + e);
+          "by exception : ", e);
     }
   }
 
