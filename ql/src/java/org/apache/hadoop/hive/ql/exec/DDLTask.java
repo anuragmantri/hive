@@ -2316,7 +2316,7 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
     String dropMsgFormat =
         "Repair: Dropped partition from metastore " + table.getFullyQualifiedName() + ":%s";
     // Copy of partitions that will be split into batches
-    Set<CheckResult.PartitionResult> batchWork = new HashSet<>(partsNotInFs);
+    Set<CheckResult.PartitionResult> batchWork = new TreeSet<>(partsNotInFs);
 
     new RetryUtilities.ExponentiallyDecayingBatchWork<Void>(batchSize, decayingFactor, maxRetries) {
       @Override
@@ -2799,7 +2799,7 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       LOG.debug("Found {} table(s) matching the SHOW TABLES statement.", tablesOrViews.size());
     } else if (type == TableType.MATERIALIZED_VIEW) {
       materializedViews = new ArrayList<>();
-      materializedViews.addAll(db.getAllMaterializedViewObjects(dbName));
+      materializedViews.addAll(db.getMaterializedViewObjectsByPattern(dbName, pattern));
       LOG.debug("Found {} materialized view(s) matching the SHOW MATERIALIZED VIEWS statement.", materializedViews.size());
     } else if (type == TableType.VIRTUAL_VIEW) {
       tablesOrViews = db.getTablesByType(dbName, pattern, type);
@@ -3560,7 +3560,8 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
           builder.append(errMsg);
         }
         else {
-          builder.append(propertyValue);
+          appendNonNull(builder, propertyName, true);
+          appendNonNull(builder, propertyValue);
         }
       }
       else {
@@ -5103,6 +5104,7 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
       }
 
       tbl.getTTable().setTemporary(crtTbl.isTemporary());
+      tbl.getTTable().unsetId();
 
       if (crtTbl.isExternal()) {
         tbl.setProperty("EXTERNAL", "TRUE");
@@ -5155,7 +5157,7 @@ public class DDLTask extends Task<DDLWork> implements Serializable {
         }
       }
 
-      if (!crtView.isReplace()) {
+      if (!crtView.isReplace() && !crtView.getIfNotExists()) {
         // View already exists, thus we should be replacing
         throw new HiveException(ErrorMsg.TABLE_ALREADY_EXISTS.getMsg(crtView.getViewName()));
       }
